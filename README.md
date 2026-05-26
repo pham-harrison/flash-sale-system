@@ -200,31 +200,3 @@ The script queries the databases directly and checks five properties:
 | 5 | Every confirmed order has a corresponding notification record |
  
 Update the database connection strings in the script to match your Terraform outputs before running.
-
----
-
-## Project Progression
- 
-The project started from a high-level proposal describing four services and three experiments. Several significant decisions were made as implementation began.
- 
-**Service communication model.** The initial proposal left inter-service communication unspecified. After working through the purchase flow, we settled on a hybrid synchronous/asynchronous design. The critical path is synchronous because users need an immediate answer. Notifications are asynchronous through RabbitMQ because they do not affect purchase correctness and should not block the user.
- 
-**Role clarification between Order and Inventory.** Early on it was unclear which service should orchestrate the purchase flow. We determined that the Order Service should act as the coordinator, it calls Inventory to reserve, writes the order record, and publishes to RabbitMQ. The Inventory Service is solely responsible for protecting the ticket count. This separation allowed us to independently scale and swap each service during experiments.
- 
-**Experiment 1 redesign.** The original Experiment 1 targeted the Inventory Service for horizontal scaling. After analysis we believed the Order Service would be the actual bottleneck. Experiment 1 was revised to scale the Order Service. Results showed the bottleneck was downstream, directly motivating Experiment 3.
- 
-**Experiment 3 redesign.** The original Experiment 3 compared Redis-only against Postgres-only. A mock interview flagged that Redis without persistence is not a realistic production design, a node restart would lose all inventory state. The experiment was redesigned to compare a Redis+Postgres hybrid against Postgres-only, which is both more realistic and more meaningful as an architectural comparison.
- 
-**Addition of Experiment 4.** The original proposal had three experiments. A fourth was added to test RabbitMQ behavior under stress. Most projects treat the message queue as infrastructure that just works, we wanted to explicitly test what happens when it does not.
- 
----
- 
-## Problems Encountered
- 
-**RDS subnet configuration.** Making RDS publicly accessible for the consistency check script required both setting `publicly_accessible = true` and moving the subnet group to public subnets. Terraform cannot modify the subnet group on a running RDS instance, which required destroying and recreating both instances.
- 
-**RabbitMQ reconnection.** Both the Order Service and Notification Service initially had no reconnection logic. If the broker went down, services would silently fail without recovering. This was discovered during Experiment 4 testing and fixed by implementing retry loops in both services before running the experiment.
- 
-**Flawed consistency check.** The original consistency check script sent 200 fresh purchase requests as part of its own execution, meaning running it after Locust would always produce 200 failures since inventory was already depleted. The script was rewritten to query the databases directly without generating any load.
- 
-**Redis backend not switching.** When switching between `postgres` and `redis_postgres` for Experiment 3, the `deploy.sh` script was reading the current task definition and re-registering it with the existing environment variables, overwriting the change that Terraform had just applied. The fix required manually registering a new task definition via the AWS CLI to force the correct `INVENTORY_BACKEND` value.
